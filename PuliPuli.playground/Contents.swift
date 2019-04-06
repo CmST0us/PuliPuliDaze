@@ -75,16 +75,7 @@ enum VideoQuality : Int {
     case q360P = 15
 }
 
-class VideoDownloadTask: Operation, URLSessionDownloadDelegate {
-    
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        print("\(videoItem.part ?? "") Download Finished, local at \(location.absoluteString)")
-        self.downloadSem.signal()
-    }
-    
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        print("\(videoItem.part ?? "") Write \(bytesWritten) Bytes")
-    }
+class GetDownloadURLTask: Operation, URLSessionDownloadDelegate {
     
     var videoItem: VideoJSON.VideoData.VideoItem!
     var quality: VideoQuality = .q360P
@@ -101,12 +92,7 @@ class VideoDownloadTask: Operation, URLSessionDownloadDelegate {
         return s
     }()
     
-    var videoPageURL: String {
-        if (self.videoItem == nil) {
-            return ""
-        }
-        return kAPIBase + "/?p=\(videoItem.page ?? 0)"
-    }
+    
     
     var downloadParam: String {
         return "appkey=\(kAPPKey)&cid=\(videoItem.cid ?? 0)&otype=json&qn=\(quality.rawValue)&quality=\(quality.rawValue)&type="
@@ -144,20 +130,7 @@ class VideoDownloadTask: Operation, URLSessionDownloadDelegate {
         }
     }
     
-    func makeDownloadRequest(downloadURL: URL) -> URLRequest {
-        var r = URLRequest(url: downloadURL)
-        
-        r.setValue(kUserAgent, forHTTPHeaderField: "User-Agent")
-        r.setValue("*/*", forHTTPHeaderField: "Accept")
-        r.setValue("en-US,en;q=0.5", forHTTPHeaderField: "Accept-Language")
-        r.setValue("gzip, deflate, br", forHTTPHeaderField: "Accept-Encoding")
-        r.setValue("bytes=0-", forHTTPHeaderField: "Range")
-        r.setValue(self.videoPageURL, forHTTPHeaderField: "Referer")
-        r.setValue("https://www.bilibili.com", forHTTPHeaderField: "Origin")
-        r.setValue("keep-alive", forHTTPHeaderField: "Connection")
-        
-        return r
-    }
+
     
     override func main() {
         let downloadList = self.videoDownloadLists()
@@ -170,33 +143,110 @@ class VideoDownloadTask: Operation, URLSessionDownloadDelegate {
     }
 }
 
-class VideoDownloader {
-    private var downloadOperation: OperationQueue
-    var maxConcurrentOperationCount: Int = 1 {
-        didSet {
-            downloadOperation.maxConcurrentOperationCount = self.maxConcurrentOperationCount
+class VideoDownloadTask {
+    var url: URL
+    var videoItem: VideoJSON.VideoData.VideoItem
+    var quality: VideoQuality
+    weak var session: URLSession?
+    
+    lazy var task: URLSessionDownloadTask = {
+        return self.session!.downloadTask(with: self.downloadRequest)
+    }()
+    
+    var refererURL: String {
+        return kAPIBase + "/?p=\(videoItem.page ?? 0)"
+    }
+    
+    var downloadRequest: URLRequest {
+        var r = URLRequest(url: self.url)
+        
+        r.setValue(kUserAgent, forHTTPHeaderField: "User-Agent")
+        r.setValue("*/*", forHTTPHeaderField: "Accept")
+        r.setValue("en-US,en;q=0.5", forHTTPHeaderField: "Accept-Language")
+        r.setValue("gzip, deflate, br", forHTTPHeaderField: "Accept-Encoding")
+        r.setValue("bytes=0-", forHTTPHeaderField: "Range")
+        r.setValue(self.refererURL, forHTTPHeaderField: "Referer")
+        r.setValue("https://www.bilibili.com", forHTTPHeaderField: "Origin")
+        r.setValue("keep-alive", forHTTPHeaderField: "Connection")
+        return r
+    }
+    
+    init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, quality: VideoQuality, session: URLSession) {
+        self.url = url
+        self.videoItem = videoItem
+        self.quality = quality
+        self.session = session
+    }
+}
+
+class VideoDownloader: NSObject, URLSessionDownloadDelegate {
+    
+    var downloadingTask: [VideoDownloadTask] = []
+    var waitingTask: [VideoDownloadTask] = []
+    
+    lazy var delegateQueue: OperationQueue = {
+       return OperationQueue()
+    }()
+    
+    lazy var session: URLSession = {
+        let s = URLSession(configuration: .default, delegate: self, delegateQueue: self.delegateQueue)
+    }()
+    
+    var maxConcurrentOperationCount: Int = 1
+    
+    func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem, quality: VideoQuality) {
+        let task = VideoDownloadTask(url: url, videoItem: videoItem, quality: quality, session: self.session)
+        self.waitingTask.append(task)
+    }
+    
+    func resumeTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        self.waitingTask.forEach { (task) in
+            if task.videoItem.cid == videoItem.cid! {
+                print("""
+                    Create Task:
+                        cid: \(videoItem.cid ?? -1)
+                        part: \(videoItem.part ?? "")
+                        page: \(videoItem.page ?? -1)
+                    """)
+                task.task.resume()
+            }
+        }
+    }
+
+    func pauseTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        self.downloadingTask.forEach { (task) in
+            if task.videoItem.cid! == videoItem.cid! {
+                print("""
+                    Pause Task \(videoItem.part ?? "")
+                    """)
+                task.task.suspend()
+            }
         }
     }
     
-    init() {
-        downloadOperation = OperationQueue()
+    func cancelTaskInQueue(_ queue:[VideoDownloadTask], videoItem: VideoJSON.VideoData.VideoItem) {
+        queue.forEach { (task) in
+            if task.videoItem.cid! == videoItem.cid! {
+                print("""
+                    Cancel Task \(videoItem.part ?? "")
+                    """)
+                task.task.cancel()
+            }
+        }
     }
     
-    func addDownloadTask(videoItem: VideoJSON.VideoData.VideoItem, quality: VideoQuality) {
-        
-        let task = VideoDownloadTask()
-        task.videoItem = videoItem
-        task.quality = quality
-        
-        downloadOperation.addOperation(task)
-        
-        print("""
-            Create Task:
-                cid: \(videoItem.cid ?? -1)
-                part: \(videoItem.part ?? "")
-                page: \(videoItem.page ?? -1)
-            """)
-        
+    func cancelTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        self.cancelTaskInQueue(self.downloadingTask, videoItem: videoItem)
+        self.cancelTaskInQueue(self.waitingTask, videoItem: videoItem)
+    }
+    
+    // MARK: - Download Delegate
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        print("\(downloadTask) Download Finished, local at \(location.absoluteString)")
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        print("\(downloadTask) Write \(bytesWritten) Bytes")
     }
     
 }
