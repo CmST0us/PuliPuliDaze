@@ -6,6 +6,13 @@ let kAPIBase = "https://api.bilibili.com/x/web-interface/view?aid="
 let kAPPKey = "iVGUTjsxvpLeuDCf"
 let kSec = "aHRmhWMLkdeMuILqORnYZocwMBpMEOdt"
 
+struct VideoListJSON: Codable {
+    struct VideoDownloadURL : Codable {
+        var url: String?
+    }
+    var durl: [VideoDownloadURL]?
+}
+
 struct VideoJSON : Codable {
     
     struct VideoData : Codable{
@@ -61,15 +68,38 @@ class Connector {
 }
 
 enum VideoQuality : Int {
+    case q1080PP = 112
     case q1080P = 80
     case q720P = 64
     case q480P = 32
     case q360P = 15
 }
 
-class VideoDownloadTask: Operation {
+class VideoDownloadTask: Operation, URLSessionDownloadDelegate {
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        print("\(videoItem.part ?? "") Download Finished, local at \(location.absoluteString)")
+        self.downloadSem.signal()
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        print("\(videoItem.part ?? "") Write \(bytesWritten) Bytes")
+    }
+    
     var videoItem: VideoJSON.VideoData.VideoItem!
     var quality: VideoQuality = .q360P
+    lazy var downloadSem: DispatchSemaphore = {
+       return DispatchSemaphore(value: 0)
+    }()
+    
+    lazy var downloadOperationQueue = {
+       return OperationQueue()
+    }()
+    
+    lazy var downloadSession: URLSession = {
+        let s = URLSession(configuration: URLSessionConfiguration.default, delegate: self, delegateQueue: self.downloadOperationQueue)
+        return s
+    }()
     
     var videoPageURL: String {
         if (self.videoItem == nil) {
@@ -97,14 +127,46 @@ class VideoDownloadTask: Operation {
         return r
     }()
     
-    override func main() {
+    func videoDownloadLists() -> [URL] {
         let (data, _, _) = URLSession.shared.syncDataTask(request: self.downloadRequest)
         guard data != nil else {
-            return
+            return []
         }
         
-        let str = String(data: data!, encoding: .utf8)
-        str
+        let jsonDecoder = JSONDecoder()
+        let videoList = try? jsonDecoder.decode(VideoListJSON.self, from: data!)
+        if videoList == nil {
+            return []
+        }
+        
+        return videoList!.durl!.map { (url) -> URL in
+            return URL(string: url.url!)!
+        }
+    }
+    
+    func makeDownloadRequest(downloadURL: URL) -> URLRequest {
+        var r = URLRequest(url: downloadURL)
+        
+        r.setValue(kUserAgent, forHTTPHeaderField: "User-Agent")
+        r.setValue("*/*", forHTTPHeaderField: "Accept")
+        r.setValue("en-US,en;q=0.5", forHTTPHeaderField: "Accept-Language")
+        r.setValue("gzip, deflate, br", forHTTPHeaderField: "Accept-Encoding")
+        r.setValue("bytes=0-", forHTTPHeaderField: "Range")
+        r.setValue(self.videoPageURL, forHTTPHeaderField: "Referer")
+        r.setValue("https://www.bilibili.com", forHTTPHeaderField: "Origin")
+        r.setValue("keep-alive", forHTTPHeaderField: "Connection")
+        
+        return r
+    }
+    
+    override func main() {
+        let downloadList = self.videoDownloadLists()
+        
+        for url in downloadList {
+            let r = self.makeDownloadRequest(downloadURL: url)
+            let task = self.downloadSession.downloadTask(with: r)
+            task.resume()
+        }
     }
 }
 
@@ -139,10 +201,10 @@ class VideoDownloader {
     
 }
 
-let kTestAVNumber = 37669504
+let kTestAVNumber = 48323686
 
 let downloader = VideoDownloader()
-downloader.maxConcurrentOperationCount = 1
+downloader.maxConcurrentOperationCount = 2
 let connector = Connector(kTestAVNumber)
 connector.connect { (json, err) in
     guard json != nil,
