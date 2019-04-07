@@ -13,7 +13,7 @@ extension URLSession {
             sem.signal()
         }
         task.resume()
-        sem.wait(timeout: DispatchTime.now() + .seconds(10))
+        let _ = sem.wait(timeout: DispatchTime.now() + .seconds(10))
         task.cancel()
         return (retData, retRes, retError)
     }
