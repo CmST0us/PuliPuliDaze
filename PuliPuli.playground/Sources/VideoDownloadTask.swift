@@ -44,6 +44,11 @@ public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
     // MARK: - Download Delegate
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         print("\(self.videoItem.part ?? "") Download Finished, local at \(location.absoluteString)")
+        
+        defer {
+            self.downloader?.finishDownloadingTask(videoItem: self.videoItem)
+        }
+        
         let saveFilePath = Env.downloadPath + "/\(self.videoItem.part!).flv"
         let saveFileURL = URL(fileURLWithPath: saveFilePath)
         do {
@@ -52,9 +57,10 @@ public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
             print("Save \(self.videoItem.part!) failed, \(error)")
         }
         print("Save to \(saveFilePath)")
+        
     }
     
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        print("\(self.videoItem.part ?? "") Write \(bytesWritten) Bytes")
+        print("\(self.videoItem.part ?? "") Write \(bytesWritten) Bytes, Process \(totalBytesWritten) / \(totalBytesExpectedToWrite) : \(Float(totalBytesWritten) / Float(totalBytesExpectedToWrite) * Float(100))%")
     }
 }
