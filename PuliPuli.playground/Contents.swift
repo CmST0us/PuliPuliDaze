@@ -31,42 +31,6 @@ struct VideoJSON : Codable {
     var data: VideoData?
 }
 
-class Connector {
-    typealias ConnectHandler = (_ videoJSON: VideoJSON?, _ err: Error?) -> Void
-    
-    var urlSession: URLSession! = nil
-    
-    let videoNumber: Int;
-    init(_ videoNumber: Int) {
-        self.videoNumber = videoNumber;
-    }
-    
-    func connect(handler: @escaping ConnectHandler) {
-        
-        var request = URLRequest(url: URL(string: kAPIBase + "\(self.videoNumber)")!)
-        request.addValue(kUserAgent, forHTTPHeaderField: "User-Agent")
-        
-        self.urlSession = URLSession(configuration: URLSessionConfiguration.default)
-        
-        let task = self.urlSession.dataTask(with: request) { (data, res, err) in
-            guard data != nil else {
-                handler(nil, err)
-                return
-            }
-            
-            let jsonDecoder = JSONDecoder()
-            let videoJson = try? jsonDecoder.decode(VideoJSON.self, from: data!)
-            if (videoJson == nil) {
-                handler(nil, err);
-                return
-            }
-            handler(videoJson!, nil);
-        }
-        
-        task.resume()
-    }
-}
-
 enum VideoQuality : Int {
     case q1080PP = 112
     case q1080P = 80
@@ -75,78 +39,111 @@ enum VideoQuality : Int {
     case q360P = 15
 }
 
-class GetDownloadURLTask: Operation, URLSessionDownloadDelegate {
+class VideoInfo {
+    var info: VideoJSON.VideoData!
+    var videoPages: [VideoJSON.VideoData.VideoItem] = []
+    var avNumber: Int
     
-    var videoItem: VideoJSON.VideoData.VideoItem!
-    var quality: VideoQuality = .q360P
-    lazy var downloadSem: DispatchSemaphore = {
-       return DispatchSemaphore(value: 0)
-    }()
+    var title: String {
+        return info.title!
+    }
     
-    lazy var downloadOperationQueue = {
-       return OperationQueue()
-    }()
+    init(av: Int) {
+        self.avNumber = av
+    }
     
-    lazy var downloadSession: URLSession = {
-        let s = URLSession(configuration: URLSessionConfiguration.default, delegate: self, delegateQueue: self.downloadOperationQueue)
-        return s
-    }()
+    func fetchInfo() -> (Bool, Error?) {
+        var request = URLRequest(url: URL(string: kAPIBase + "\(self.avNumber)")!)
+        request.addValue(kUserAgent, forHTTPHeaderField: "User-Agent")
+        let (data, _, err) = URLSession.shared.syncDataTask(request: request)
+        if (data == nil) {
+            return (false, err)
+        }
+        
+        let jsonDecoder = JSONDecoder()
+        let videoJson = try? jsonDecoder.decode(VideoJSON.self, from: data!)
+        if (videoJson == nil) {
+            return (false, err)
+        }
+        
+        self.videoPages = videoJson?.data?.pages ?? []
+        self.info = videoJson!.data!
+        if (self.videoPages.count > 0) {
+            return (true, nil)
+        }
+        return (false, nil)
+    }
     
+    var pagesTitle: [String] {
+        return self.videoPages.map({ (item) -> String in
+            return item.part!
+        })
+    }
     
+}
+
+class VideoPageInfo {
+    
+    var downloadURL: [URL] = []
+    
+    var videoItem: VideoJSON.VideoData.VideoItem
+    var quality: VideoQuality = .q480P
     
     var downloadParam: String {
         return "appkey=\(kAPPKey)&cid=\(videoItem.cid ?? 0)&otype=json&qn=\(quality.rawValue)&quality=\(quality.rawValue)&type="
+    }
+    
+    var refererURL: String {
+        return kAPIBase + "/?p=\(videoItem.page ?? 0)"
     }
     
     var checkSum: String {
         return (self.downloadParam + kSec).md5
     }
     
-    var videoListAPIURL: String {
+    var downloadListRequestURL: String {
         return "https://interface.bilibili.com/v2/playurl?\(downloadParam)&sign=\(checkSum)"
     }
     
     lazy var downloadRequest: URLRequest = {
-        var r = URLRequest(url: URL(string: self.videoListAPIURL)!)
-        r.setValue(self.videoPageURL, forHTTPHeaderField: "Referer")
+        var r = URLRequest(url: URL(string: self.downloadListRequestURL)!)
+        r.setValue(self.refererURL, forHTTPHeaderField: "Referer")
         r.setValue(kUserAgent, forHTTPHeaderField: "User-Agent")
         return r
     }()
     
-    func videoDownloadLists() -> [URL] {
-        let (data, _, _) = URLSession.shared.syncDataTask(request: self.downloadRequest)
+    init(videoItem: VideoJSON.VideoData.VideoItem) {
+        self.videoItem = videoItem
+    }
+    
+    func fetchDownloadURL(quality: VideoQuality) -> (Bool, Error?){
+        self.quality = quality
+        
+        let (data, _, err) = URLSession.shared.syncDataTask(request: self.downloadRequest)
         guard data != nil else {
-            return []
+            return (false, err)
         }
         
         let jsonDecoder = JSONDecoder()
         let videoList = try? jsonDecoder.decode(VideoListJSON.self, from: data!)
         if videoList == nil {
-            return []
+            return (false, nil)
         }
         
-        return videoList!.durl!.map { (url) -> URL in
+        self.downloadURL = videoList!.durl!.map({ (url) -> URL in
             return URL(string: url.url!)!
-        }
-    }
-    
-
-    
-    override func main() {
-        let downloadList = self.videoDownloadLists()
+        })
         
-        for url in downloadList {
-            let r = self.makeDownloadRequest(downloadURL: url)
-            let task = self.downloadSession.downloadTask(with: r)
-            task.resume()
+        if (self.downloadURL.count > 0) {
+            return (true, nil)
         }
+        return (false, nil)
     }
 }
 
 class VideoDownloadTask {
     var url: URL
     var videoItem: VideoJSON.VideoData.VideoItem
-    var quality: VideoQuality
     weak var session: URLSession?
     
     lazy var task: URLSessionDownloadTask = {
@@ -171,10 +168,9 @@ class VideoDownloadTask {
         return r
     }
     
-    init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, quality: VideoQuality, session: URLSession) {
+    init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, session: URLSession) {
         self.url = url
         self.videoItem = videoItem
-        self.quality = quality
         self.session = session
     }
 }
@@ -190,12 +186,13 @@ class VideoDownloader: NSObject, URLSessionDownloadDelegate {
     
     lazy var session: URLSession = {
         let s = URLSession(configuration: .default, delegate: self, delegateQueue: self.delegateQueue)
+        return s
     }()
     
     var maxConcurrentOperationCount: Int = 1
     
-    func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem, quality: VideoQuality) {
-        let task = VideoDownloadTask(url: url, videoItem: videoItem, quality: quality, session: self.session)
+    func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
+        let task = VideoDownloadTask(url: url, videoItem: videoItem, session: self.session)
         self.waitingTask.append(task)
     }
     
@@ -252,31 +249,32 @@ class VideoDownloader: NSObject, URLSessionDownloadDelegate {
 }
 
 let kTestAVNumber = 48323686
-
 let downloader = VideoDownloader()
-downloader.maxConcurrentOperationCount = 2
-let connector = Connector(kTestAVNumber)
-connector.connect { (json, err) in
-    guard json != nil,
-        err == nil,
-        json!.data != nil,
-        json!.data!.pages != nil else {
-        return
+downloader.maxConcurrentOperationCount = 1
+
+let videoInfo = VideoInfo(av: kTestAVNumber)
+let (ret, _) = videoInfo.fetchInfo()
+if (ret) {
+    print("Ready to download \(videoInfo.title)")
+    videoInfo.pagesTitle.enumerated().forEach { (i) in
+        print("     \(i.offset): \(i.element)")
     }
-    
-    // create down load task
-    print("""
-Start Download Video av\(kTestAVNumber)
-    Title: \(json!.data!.title ?? "")
-""")
-    
-    let items = json!.data!.pages!
-    for item in items {
-        downloader.addDownloadTask(videoItem: item, quality: .q480P)
-    }
-    
-    
 }
+
+let downloadPageIndex = 0
+print("Select page \(downloadPageIndex)")
+
+let page = VideoPageInfo(videoItem: videoInfo.videoPages[downloadPageIndex])
+page.fetchDownloadURL(quality: .q480P)
+
+downloader.addTask(url: page.downloadURL[0], videoItem: page.videoItem)
+downloader.resumeTask(videoItem: page.videoItem)
+
+    // create down load task
+//    print("""
+//Start Download Video av\(kTestAVNumber)
+//    Title: \(json!.data!.title ?? "")
+//""")
 
 
 
