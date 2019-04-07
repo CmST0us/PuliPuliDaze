@@ -141,13 +141,21 @@ class VideoPageInfo {
     }
 }
 
-class VideoDownloadTask {
+class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
     var url: URL
     var videoItem: VideoJSON.VideoData.VideoItem
-    weak var session: URLSession?
+    
+    lazy var delegateQueue: OperationQueue = {
+        return OperationQueue()
+    }()
+    
+    lazy var session: URLSession = {
+        let s = URLSession(configuration: .default, delegate: self, delegateQueue: self.delegateQueue)
+        return s
+    }()
     
     lazy var task: URLSessionDownloadTask = {
-        return self.session!.downloadTask(with: self.downloadRequest)
+        return self.session.downloadTask(with: self.downloadRequest)
     }()
     
     var refererURL: String {
@@ -168,82 +176,105 @@ class VideoDownloadTask {
         return r
     }
     
-    init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, session: URLSession) {
+    init(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
         self.url = url
         self.videoItem = videoItem
-        self.session = session
-    }
-}
-
-class VideoDownloader: NSObject, URLSessionDownloadDelegate {
-    
-    var downloadingTask: [VideoDownloadTask] = []
-    var waitingTask: [VideoDownloadTask] = []
-    
-    lazy var delegateQueue: OperationQueue = {
-       return OperationQueue()
-    }()
-    
-    lazy var session: URLSession = {
-        let s = URLSession(configuration: .default, delegate: self, delegateQueue: self.delegateQueue)
-        return s
-    }()
-    
-    var maxConcurrentOperationCount: Int = 1
-    
-    func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
-        let task = VideoDownloadTask(url: url, videoItem: videoItem, session: self.session)
-        self.waitingTask.append(task)
-    }
-    
-    func resumeTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        self.waitingTask.forEach { (task) in
-            if task.videoItem.cid == videoItem.cid! {
-                print("""
-                    Create Task:
-                        cid: \(videoItem.cid ?? -1)
-                        part: \(videoItem.part ?? "")
-                        page: \(videoItem.page ?? -1)
-                    """)
-                task.task.resume()
-            }
-        }
-    }
-
-    func pauseTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        self.downloadingTask.forEach { (task) in
-            if task.videoItem.cid! == videoItem.cid! {
-                print("""
-                    Pause Task \(videoItem.part ?? "")
-                    """)
-                task.task.suspend()
-            }
-        }
-    }
-    
-    func cancelTaskInQueue(_ queue:[VideoDownloadTask], videoItem: VideoJSON.VideoData.VideoItem) {
-        queue.forEach { (task) in
-            if task.videoItem.cid! == videoItem.cid! {
-                print("""
-                    Cancel Task \(videoItem.part ?? "")
-                    """)
-                task.task.cancel()
-            }
-        }
-    }
-    
-    func cancelTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        self.cancelTaskInQueue(self.downloadingTask, videoItem: videoItem)
-        self.cancelTaskInQueue(self.waitingTask, videoItem: videoItem)
     }
     
     // MARK: - Download Delegate
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        print("\(downloadTask) Download Finished, local at \(location.absoluteString)")
+        print("\(self.videoItem.part ?? "") Download Finished, local at \(location.absoluteString)")
     }
     
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        print("\(downloadTask) Write \(bytesWritten) Bytes")
+        print("\(self.videoItem.part ?? "") Write \(bytesWritten) Bytes")
+    }
+}
+
+class VideoDownloader: NSObject{
+    
+    var downloadingTask: [VideoDownloadTask] = []
+    var waitingTask: [VideoDownloadTask] = []
+    
+    var maxConcurrentOperationCount: Int = 1
+    
+    func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
+        let task = VideoDownloadTask(url: url, videoItem: videoItem)
+        self.waitingTask.append(task)
+    }
+    
+    func videoItemIndexInWaitingQueue(videoItem: VideoJSON.VideoData.VideoItem) -> Int {
+        var index = -1
+        self.waitingTask.enumerated().forEach { (task) in
+            
+            if task.element.videoItem.cid == videoItem.cid! {
+                index = task.offset
+            }
+        }
+        return index
+    }
+    
+    func videoItemIndexInDownloadingQueue(videoItem: VideoJSON.VideoData.VideoItem) -> Int {
+        var index = -1
+        self.downloadingTask.enumerated().forEach { (task) in
+            
+            if task.element.videoItem.cid == videoItem.cid! {
+                index = task.offset
+            }
+        }
+        return index
+    }
+    
+    func resumeDownloadingTask(indexInDownloadingQueue: Int) {
+        let task = self.downloadingTask[indexInDownloadingQueue]
+        task.task.resume()
+    }
+    
+    func resumeWaitingTask(indexInWaitingQueue: Int) {
+        let task = self.waitingTask[indexInWaitingQueue]
+        self.downloadingTask.append(task)
+        self.waitingTask.remove(at: indexInWaitingQueue)
+        task.task.resume()
+    }
+    
+    func resumeTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
+        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
+        
+        if (downloadingQueueIndex >= 0) {
+            self.resumeDownloadingTask(indexInDownloadingQueue: downloadingQueueIndex)
+        } else if (waitingQueueIndex == -1 && downloadingQueueIndex == -1) {
+            // invaild
+            return
+        } else if (waitingQueueIndex >= 0) {
+            self.resumeWaitingTask(indexInWaitingQueue: waitingQueueIndex)
+        }
+    }
+
+    func pauseTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
+        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
+        if (waitingQueueIndex >= 0) {
+            self.waitingTask[waitingQueueIndex].task.suspend()
+        }
+        if (downloadingQueueIndex >= 0) {
+            self.downloadingTask[downloadingQueueIndex].task.suspend()
+        }
+    }
+    
+    func cancelTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
+        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
+        
+        if (waitingQueueIndex >= 0) {
+            self.waitingTask[waitingQueueIndex].task.cancel()
+            self.waitingTask.remove(at: waitingQueueIndex)
+        }
+        
+        if (downloadingQueueIndex >= 0) {
+            self.downloadingTask[downloadingQueueIndex].task.cancel()
+            self.downloadingTask.remove(at: downloadingQueueIndex)
+        }
     }
     
 }
@@ -270,11 +301,14 @@ page.fetchDownloadURL(quality: .q480P)
 downloader.addTask(url: page.downloadURL[0], videoItem: page.videoItem)
 downloader.resumeTask(videoItem: page.videoItem)
 
-    // create down load task
-//    print("""
-//Start Download Video av\(kTestAVNumber)
-//    Title: \(json!.data!.title ?? "")
-//""")
-
+DispatchQueue.global().asyncAfter(deadline: DispatchTime.now() + .seconds(3)) {
+    downloader.pauseTask(videoItem: page.videoItem)
+    print("Pause Download")
+    
+    DispatchQueue.global().asyncAfter(deadline: DispatchTime.now() + .seconds(1), execute: {
+        downloader.resumeTask(videoItem: page.videoItem)
+        print("Resume Download")
+    })
+}
 
 
