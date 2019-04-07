@@ -2,88 +2,99 @@ import Foundation
 
 public class VideoDownloader: NSObject{
     
-    var downloadingTask: [VideoDownloadTask] = []
-    var waitingTask: [VideoDownloadTask] = []
+    var pausingQueue:[VideoDownloadTask] = []
+    var downloadingQueue: [VideoDownloadTask] = []
+    var waitingQueue: [VideoDownloadTask] = []
     
     public var maxConcurrentOperationCount: Int = 1
     
     public func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
-        let task = VideoDownloadTask(url: url, videoItem: videoItem)
-        self.waitingTask.append(task)
-    }
-    
-    public func videoItemIndexInWaitingQueue(videoItem: VideoJSON.VideoData.VideoItem) -> Int {
-        var index = -1
-        self.waitingTask.enumerated().forEach { (task) in
-            
-            if task.element.videoItem.cid == videoItem.cid! {
-                index = task.offset
-            }
-        }
-        return index
-    }
-    
-    public func videoItemIndexInDownloadingQueue(videoItem: VideoJSON.VideoData.VideoItem) -> Int {
-        var index = -1
-        self.downloadingTask.enumerated().forEach { (task) in
-            
-            if task.element.videoItem.cid == videoItem.cid! {
-                index = task.offset
-            }
-        }
-        return index
-    }
-    
-    func resumeDownloadingTask(indexInDownloadingQueue: Int) {
-        let task = self.downloadingTask[indexInDownloadingQueue]
-        task.task.resume()
-    }
-    
-    func resumeWaitingTask(indexInWaitingQueue: Int) {
-        let task = self.waitingTask[indexInWaitingQueue]
-        self.downloadingTask.append(task)
-        self.waitingTask.remove(at: indexInWaitingQueue)
-        task.task.resume()
-    }
-    
-    public func resumeTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
-        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
         
-        if (downloadingQueueIndex >= 0) {
-            self.resumeDownloadingTask(indexInDownloadingQueue: downloadingQueueIndex)
-        } else if (waitingQueueIndex == -1 && downloadingQueueIndex == -1) {
-            // invaild
-            return
-        } else if (waitingQueueIndex >= 0) {
-            self.resumeWaitingTask(indexInWaitingQueue: waitingQueueIndex)
-        }
     }
     
-    public func pauseTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
-        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
-        if (waitingQueueIndex >= 0) {
-            self.waitingTask[waitingQueueIndex].task.suspend()
+    public func videoItemIndexInQueue(_ queue: [VideoDownloadTask], videoItem: VideoJSON.VideoData.VideoItem) -> Int {
+        var index = -1
+        queue.enumerated().forEach { (task) in
+            if task.element.videoItem.cid == videoItem.cid! {
+                index = task.offset
+            }
         }
-        if (downloadingQueueIndex >= 0) {
-            self.downloadingTask[downloadingQueueIndex].task.suspend()
-        }
+        return index
     }
     
+    // MARK: - Cancel Method
     public func cancelTask(videoItem: VideoJSON.VideoData.VideoItem) {
-        let waitingQueueIndex = self.videoItemIndexInWaitingQueue(videoItem: videoItem)
-        let downloadingQueueIndex = self.videoItemIndexInDownloadingQueue(videoItem: videoItem)
-        
-        if (waitingQueueIndex >= 0) {
-            self.waitingTask[waitingQueueIndex].task.cancel()
-            self.waitingTask.remove(at: waitingQueueIndex)
+        var index = -1
+        index = self.videoItemIndexInQueue(self.pausingQueue, videoItem: videoItem)
+        if (index >= 0) {
+            self.pausingQueue[index].task.cancel()
+            self.pausingQueue.remove(at: index)
         }
         
-        if (downloadingQueueIndex >= 0) {
-            self.downloadingTask[downloadingQueueIndex].task.cancel()
-            self.downloadingTask.remove(at: downloadingQueueIndex)
+        index = self.videoItemIndexInQueue(self.downloadingQueue, videoItem: videoItem)
+        if (index >= 0) {
+            self.downloadingQueue[index].task.cancel()
+            self.downloadingQueue.remove(at: index)
         }
+        
+        index = self.videoItemIndexInQueue(self.waitingQueue, videoItem: videoItem)
+        if (index >= 0) {
+            self.waitingQueue[index].task.cancel()
+            self.waitingQueue.remove(at: index)
+        }
+    }
+    
+    // MARK: - Downloading Queue Method
+    public func pauseDownloadingTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let indexInDownloadingQueue = self.videoItemIndexInQueue(self.downloadingQueue, videoItem: videoItem)
+        
+        let task = self.downloadingQueue[indexInDownloadingQueue]
+        task.task.suspend()
+        
+        self.pausingQueue.append(task)
+        self.downloadingQueue.remove(at: indexInDownloadingQueue)
+    }
+    
+    public func finishDownloadingTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let indexInDownloadingQueue = self.videoItemIndexInQueue(self.downloadingQueue, videoItem: videoItem)
+        
+        self.downloadingQueue.remove(at: indexInDownloadingQueue)
+        let task = self.waitingQueue.popLast()
+        if (task != nil) {
+            self.downloadingQueue.append(task!)
+            task!.task.resume()
+        }
+    }
+    
+    // MARK: - Pausing Queue Method
+    public func resumePausingTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let indexInPausingQueue = self.videoItemIndexInQueue(self.pausingQueue, videoItem: videoItem)
+        
+        let task = self.pausingQueue[indexInPausingQueue]
+        self.waitingQueue.append(task)
+        self.pausingQueue.remove(at: indexInPausingQueue)
+    }
+    
+    // MARK: - Waiting Queue Method
+    public func pauseWaitingTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        let indexInWaitingQueue = self.videoItemIndexInQueue(self.waitingQueue, videoItem: videoItem)
+        
+        let task = self.waitingQueue[indexInWaitingQueue]
+        task.task.suspend()
+        self.pausingQueue.append(task)
+        self.waitingQueue.remove(at: indexInWaitingQueue)
+    }
+    
+    public func resumeWaitingTask(videoItem: VideoJSON.VideoData.VideoItem) {
+        if (self.downloadingQueue.count >= self.maxConcurrentOperationCount) {
+            return
+        }
+        
+        let indexInWaitingQueue = self.videoItemIndexInQueue(self.waitingQueue, videoItem: videoItem)
+        let task = self.waitingQueue[indexInWaitingQueue]
+        self.downloadingQueue.append(task)
+        task.task.resume()
+        self.waitingQueue.remove(at: indexInWaitingQueue)
     }
     
 }

@@ -3,11 +3,11 @@ import CommonCrypto
 
 Env.checkAndCreateDownloadDocument()
 
-let kTestAVNumber = 48323686
+let downloadAVNumber = 37669504
 let downloader = VideoDownloader()
 downloader.maxConcurrentOperationCount = 1
 
-let videoInfo = VideoInfo(av: kTestAVNumber)
+let videoInfo = VideoInfo(av: downloadAVNumber)
 let (ret, _) = videoInfo.fetchInfo()
 if (ret) {
     print("Ready to download \(videoInfo.title)")
@@ -16,13 +16,15 @@ if (ret) {
     }
 }
 
-let downloadPageIndex = 0
+let downloadPageIndex = 0...610
 print("Select page \(downloadPageIndex)")
 
-let page = VideoPageInfo(videoItem: videoInfo.videoPages[downloadPageIndex])
-page.fetchDownloadURL(quality: .q480P)
-
-downloader.addTask(url: page.downloadURL[0], videoItem: page.videoItem)
-downloader.resumeTask(videoItem: page.videoItem)
+for index in downloadPageIndex {
+    let page = VideoPageInfo(videoItem: videoInfo.videoPages[index])
+    page.fetchDownloadURL(quality: .q480P)
+    
+    downloader.addTask(url: page.downloadURL[0], videoItem: page.videoItem)
+    downloader.resumeTask(videoItem: page.videoItem)
+}
 
 

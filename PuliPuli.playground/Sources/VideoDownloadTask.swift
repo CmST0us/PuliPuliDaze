@@ -3,6 +3,7 @@ import Foundation
 public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
     var url: URL
     var videoItem: VideoJSON.VideoData.VideoItem
+    weak var downloader: VideoDownloader?
     
     lazy var delegateQueue: OperationQueue = {
         return OperationQueue()
@@ -34,9 +35,10 @@ public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
         return r
     }
     
-    public init(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
+    public init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, downloader: VideoDownloader) {
         self.url = url
         self.videoItem = videoItem
+        self.downloader = downloader
     }
     
     // MARK: - Download Delegate
