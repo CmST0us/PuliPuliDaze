@@ -48,7 +48,9 @@ public class PuliPuliDownloader: NSObject, VideoDownloaderDelegate {
                 let item = self.downloadItem.removeFirst()
                 let page = VideoPageInfo(videoItem: self.videoInfo.videoPages[item.0])
                 page.fetchDownloadURL(quality: item.1)
-                downloader.addTask(url: page.downloadURL[0], videoItem: page.videoItem)
+                for downloadUrl in page.downloadURL {
+                    downloader.addTask(url: downloadUrl, videoItem: page.videoItem)
+                }
             }
         }
     }
