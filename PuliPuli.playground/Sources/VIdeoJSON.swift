@@ -2,6 +2,7 @@ import Foundation
 
 public struct VideoListJSON: Codable {
     public struct VideoDownloadURL : Codable {
+        public var order: Int?
         public var url: String?
     }
     public var durl: [VideoDownloadURL]?

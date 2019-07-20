@@ -32,7 +32,7 @@ public class VideoDownloader: NSObject{
         
     }
     
-    public func addTask(url: URL, videoItem: VideoJSON.VideoData.VideoItem) {
+    public func addTask(url: (Int, URL), videoItem: VideoJSON.VideoData.VideoItem) {
         let task = VideoDownloadTask(url: url, videoItem: videoItem, downloader: self)
         self.waitingQueue.append(task)
         if (downloadingQueue.count < maxConcurrentOperationCount) {
@@ -105,10 +105,10 @@ public class VideoDownloader: NSObject{
         
         self.downloadingQueue.remove(at: indexInDownloadingQueue)
         
-        let task = self.waitingQueue.popLast()
-        if (task != nil) {
-            self.downloadingQueue.append(task!)
-            task!.task.resume()
+        if (self.waitingQueue.count > 0) {
+            let task = self.waitingQueue.removeFirst()
+            self.downloadingQueue.append(task)
+            task.task.resume()
         }
         
         if (self.delegate != nil) {

@@ -2,7 +2,8 @@ import Foundation
 
 public class VideoPageInfo {
     
-    public var downloadURL: [URL] = []
+    // (order, URL)
+    public var downloadURL: [(Int, URL)] = []
     
     public var videoItem: VideoJSON.VideoData.VideoItem {
         return _videoItem
@@ -51,10 +52,18 @@ public class VideoPageInfo {
             return (false, nil)
         }
         
-        self.downloadURL = videoList!.durl!.map({ (url) -> URL in
-            return URL(string: url.url!)!
+        var tDownloadURL = videoList!.durl!.map({ (url) -> (Int, URL) in
+            return (url.order!, URL(string: url.url!)!)
         })
         
+        tDownloadURL.sort { (a, b) -> Bool in
+            if (a.0 > b.0) {
+                return false
+            }
+            return true
+        }
+        
+        self.downloadURL = tDownloadURL
         if (self.downloadURL.count > 0) {
             return (true, nil)
         }

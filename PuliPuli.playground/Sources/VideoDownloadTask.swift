@@ -2,6 +2,7 @@ import Foundation
 
 public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
     var url: URL
+    var order: Int = 0
     var videoItem: VideoJSON.VideoData.VideoItem
     weak var downloader: VideoDownloader?
     
@@ -35,8 +36,9 @@ public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
         return r
     }
     
-    public init(url: URL, videoItem: VideoJSON.VideoData.VideoItem, downloader: VideoDownloader) {
-        self.url = url
+    public init(url: (Int, URL), videoItem: VideoJSON.VideoData.VideoItem, downloader: VideoDownloader) {
+        self.order = url.0
+        self.url = url.1
         self.videoItem = videoItem
         self.downloader = downloader
     }
@@ -49,7 +51,7 @@ public class VideoDownloadTask: NSObject, URLSessionDownloadDelegate  {
             self.downloader?.finishDownloadingTask(videoItem: self.videoItem)
         }
         
-        let saveFilePath = Env.downloadPath + "/\(self.videoItem.part!).flv"
+        let saveFilePath = Env.downloadPath + "/\(self.videoItem.part!)-\(String(self.order)).flv"
         let saveFileURL = URL(fileURLWithPath: saveFilePath)
         do {
             try FileManager.default.moveItem(at: location, to: saveFileURL)
